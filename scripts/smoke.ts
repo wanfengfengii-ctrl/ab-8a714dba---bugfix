@@ -149,6 +149,61 @@ if (rd.feasible) {
   check(rd.plan.finalMass === 4 && rd.plan.finalTorque === 0, '十进制不等：载荷与力矩边界保持成立');
 }
 
+// 微小十进制力矩越界场景：b1 仅有的两个位置力臂为 1.0000000001 / 1.0000000002，
+// 按录入十进制值都使挂入后的力矩严格大于上限 1（越界仅 1e-10）；b2~b4 只能挂
+// 零力臂位置。必须判定不可行且不得返回任何完整挂装方案——越界不得被容差放行。
+const microTorqueScenario: Scenario = {
+  rails: [
+    { id: 'Z1', name: 'Z1', coordinate: 0 },
+    { id: 'Z2', name: 'Z2', coordinate: 0 },
+    { id: 'R1', name: 'R1', coordinate: 1.0000000001 },
+    { id: 'R2', name: 'R2', coordinate: 1.0000000002 },
+  ],
+  blocks: [
+    { id: 'b1', name: 'b1', mass: 1, options: [{ railId: 'R1', cost: 0 }, { railId: 'R2', cost: 0 }] },
+    { id: 'b2', name: 'b2', mass: 1, options: [{ railId: 'Z1', cost: 0 }, { railId: 'Z2', cost: 0 }] },
+    { id: 'b3', name: 'b3', mass: 1, options: [{ railId: 'Z1', cost: 0 }, { railId: 'Z2', cost: 0 }] },
+    { id: 'b4', name: 'b4', mass: 1, options: [{ railId: 'Z1', cost: 0 }, { railId: 'Z2', cost: 0 }] },
+  ],
+  limits: { maxLoad: 4, minTorque: -1, maxTorque: 1 },
+};
+
+const rm = adjudicate(microTorqueScenario);
+check(!rm.feasible, '裁决模块：微小十进制力矩越界场景应判定为不可行');
+if (!rm.feasible) {
+  check(rm.report.witnessPrefix.length === 3, '微力矩越界：最深可行已选前缀应为 b2~b4 共 3 步');
+  check(
+    rm.report.violations.length === 2 &&
+      rm.report.violations.every((v) => v.kinds.length === 1 && v.kinds[0] === 'torque-high'),
+    '微力矩越界：b1 的两个位置均应只触发力矩上限（挂后质量 4 恰为载荷上限，不得误报）',
+  );
+  check(
+    rm.report.violations[0]?.torqueAfter === 1.0000000001 && rm.report.violations[1]?.torqueAfter === 1.0000000002,
+    '微力矩越界：挂后力矩应按录入十进制值精确报告（1.0000000001 / 1.0000000002）',
+  );
+}
+
+// 力矩闭区间十进制边界场景：上限改为 1.0000000001 后，b1 位置 #1 恰好贴上边界
+// （闭区间允许），位置 #2 仍严格越界；须给出完整方案且 b1 采用位置 #1。
+const microBoundaryScenario: Scenario = {
+  ...microTorqueScenario,
+  limits: { maxLoad: 4, minTorque: -1, maxTorque: 1.0000000001 },
+};
+
+const rb = adjudicate(microBoundaryScenario);
+check(rb.feasible, '裁决模块：力矩恰好贴上十进制闭区间边界应判定为可行');
+if (rb.feasible) {
+  check(rb.plan.steps.length === 4, '微力矩边界：完整方案应覆盖四块配重（每块恰用一次）');
+  check(
+    rb.plan.steps[0]?.blockIndex === 0 && rb.plan.steps[0]?.optionIndex === 0,
+    '微力矩边界：b1 应采用恰好贴边界的位置 #1（R1）',
+  );
+  check(
+    rb.plan.finalTorque === 1.0000000001 && rb.plan.finalMass === 4,
+    `微力矩边界：最终力矩应恰好等于十进制上限（实际 ${rb.plan.finalTorque}）`,
+  );
+}
+
 // 不可行场景：深度 1 即止步，最深前缀为 b1@R（余量最大），剩余选择同时触发载荷与力矩限制。
 const infeasibleScenario: Scenario = {
   rails: [{ id: 'R', name: 'R', coordinate: 1 }],
