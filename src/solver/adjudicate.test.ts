@@ -276,6 +276,91 @@ describe('adjudicate · 可行方案与决胜规则', () => {
   });
 });
 
+describe('adjudicate · 十进制微小边界的约束判定', () => {
+  // 回归场景：b1 的两个可选位置力臂为 1.0000000001 / 1.0000000002，相对力矩上限 1
+  // 仅超出 1e-10 / 2e-10；旧实现以 EPS=1e-9 容差判定边界，把真实超限吞没，
+  // 返回了覆盖全部配重的可行方案。约束须按录入的十进制值判定。
+  const tinyRails = (): Scenario['rails'] =>
+    rails(['P1', 1.0000000001], ['P2', 1.0000000002], ['Z1', 0], ['Z2', 0]);
+  const tinyBlocks = (): Scenario['blocks'] => [
+    block('b1', 1, [[0, 0], [1, 0]]),
+    block('b2', 1, [[2, 0], [3, 0]]),
+    block('b3', 1, [[2, 0], [3, 0]]),
+    block('b4', 1, [[2, 0], [3, 0]]),
+  ];
+
+  it('微小十进制力矩严格超过上限：不可行，不返回任何完整挂装方案', () => {
+    const outcome = adjudicate({
+      rails: tinyRails(),
+      blocks: tinyBlocks(),
+      limits: limits(4, -1, 1),
+    });
+    expect(outcome.feasible).toBe(false);
+    if (outcome.feasible) return;
+    // 最深可行前缀：其余三块（零力臂）全部挂入、力矩恒为 0，第 4 步起无法继续。
+    expect(outcome.report.witnessPrefix).toHaveLength(3);
+    expect(outcome.report.witnessPrefix.map((s) => s.blockIndex)).toEqual([1, 2, 3]);
+    expect(outcome.report.witnessPrefix.map((s) => s.cumulativeTorque)).toEqual([0, 0, 0]);
+    expect(outcome.report.witnessPrefix.map((s) => s.cumulativeMass)).toEqual([1, 2, 3]);
+    // b1 的两个位置均严格超力矩上限，逐一列出；挂后力矩按录入十进制值精确报告。
+    expect(outcome.report.violations).toHaveLength(2);
+    expect(outcome.report.violations.map((v) => [v.blockIndex, v.optionIndex, v.kinds])).toEqual([
+      [0, 0, ['torque-high']],
+      [0, 1, ['torque-high']],
+    ]);
+    expect(outcome.report.violations[0].torqueAfter).toBe(1.0000000001);
+    expect(outcome.report.violations[1].torqueAfter).toBe(1.0000000002);
+  });
+
+  it('力矩恰贴十进制上限（闭区间边界）：可行，最终力矩精确等于上限', () => {
+    const outcome = adjudicate({
+      rails: tinyRails(),
+      blocks: tinyBlocks(),
+      limits: limits(4, -1, 1.0000000001),
+    });
+    expect(outcome.feasible).toBe(true);
+    if (!outcome.feasible) return;
+    // 完整方案覆盖四块；b1 只能取第一个位置（1.0000000002 仍严格超限）。
+    expect(outcome.plan.steps).toHaveLength(4);
+    expect(new Set(outcome.plan.steps.map((s) => s.blockIndex))).toEqual(new Set([0, 1, 2, 3]));
+    expect(outcome.plan.steps.map((s) => [s.blockIndex, s.optionIndex])).toEqual([
+      [0, 0],
+      [1, 0],
+      [2, 0],
+      [3, 0],
+    ]);
+    // 最终力矩精确贴在上限边界（闭区间允许），力矩余量为 0，载荷恰好到上限。
+    expect(outcome.plan.finalTorque).toBe(1.0000000001);
+    expect(outcome.plan.finalMass).toBe(4);
+    expect(outcome.plan.minTorqueMargin).toBe(0);
+    expect(outcome.plan.totalCost).toBe(0);
+  });
+
+  it('微小十进制载荷严格超过上限：不可行', () => {
+    // 对照载荷维度：四块质量 1.0000000001，总载荷上限 4，挂到第 4 块时
+    // 累计 4.0000000004 严格超限（仅超出 4e-10），同样不得被容差吞没。
+    const outcome = adjudicate({
+      rails: rails(['Z1', 0], ['Z2', 0]),
+      blocks: [
+        block('b1', 1.0000000001, [[0, 0], [1, 0]]),
+        block('b2', 1.0000000001, [[0, 0], [1, 0]]),
+        block('b3', 1.0000000001, [[0, 0], [1, 0]]),
+        block('b4', 1.0000000001, [[0, 0], [1, 0]]),
+      ],
+      limits: limits(4, -10, 10),
+    });
+    expect(outcome.feasible).toBe(false);
+    if (outcome.feasible) return;
+    expect(outcome.report.witnessPrefix).toHaveLength(3);
+    expect(outcome.report.witnessPrefix[2].cumulativeMass).toBe(3.0000000003);
+    expect(outcome.report.violations).toHaveLength(2);
+    for (const v of outcome.report.violations) {
+      expect(v.kinds).toEqual(['load']);
+      expect(v.massAfter).toBe(4.0000000004);
+    }
+  });
+});
+
 describe('adjudicate · 无可行方案的诊断', () => {
   it('第一步即不可挂：已选前缀为空，逐一列出触发的力矩限制', () => {
     const outcome = adjudicate({

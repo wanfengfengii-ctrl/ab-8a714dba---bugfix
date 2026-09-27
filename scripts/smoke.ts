@@ -149,6 +149,63 @@ if (rd.feasible) {
   check(rd.plan.finalMass === 4 && rd.plan.finalTorque === 0, '十进制不等：载荷与力矩边界保持成立');
 }
 
+// 微小十进制力矩超限场景：b1 的两个位置力臂为 1.0000000001 / 1.0000000002，
+// 相对力矩上限 1 仅超出 1e-10 / 2e-10，但必须按录入的十进制值判定为严格超限；
+// 其余三块只能挂在零力臂位置。应判定不可行，不得返回任何完整挂装方案。
+const tinyExcessScenario: Scenario = {
+  rails: [
+    { id: 'P1', name: 'P1', coordinate: 1.0000000001 },
+    { id: 'P2', name: 'P2', coordinate: 1.0000000002 },
+    { id: 'Z1', name: 'Z1', coordinate: 0 },
+    { id: 'Z2', name: 'Z2', coordinate: 0 },
+  ],
+  blocks: [
+    { id: 'b1', name: 'b1', mass: 1, options: [{ railId: 'P1', cost: 0 }, { railId: 'P2', cost: 0 }] },
+    { id: 'b2', name: 'b2', mass: 1, options: [{ railId: 'Z1', cost: 0 }, { railId: 'Z2', cost: 0 }] },
+    { id: 'b3', name: 'b3', mass: 1, options: [{ railId: 'Z1', cost: 0 }, { railId: 'Z2', cost: 0 }] },
+    { id: 'b4', name: 'b4', mass: 1, options: [{ railId: 'Z1', cost: 0 }, { railId: 'Z2', cost: 0 }] },
+  ],
+  limits: { maxLoad: 4, minTorque: -1, maxTorque: 1 },
+};
+
+const rx = adjudicate(tinyExcessScenario);
+check(!rx.feasible, '裁决模块：微小十进制力矩超限场景应判定为不可行（不得返回完整挂装方案）');
+if (!rx.feasible) {
+  check(rx.report.witnessPrefix.length === 3, '微小超限：最深可行前缀应覆盖其余三块（长度 3）');
+  check(
+    rx.report.violations.length === 2 &&
+      rx.report.violations.every((v) => v.blockIndex === 0 && v.kinds.join() === 'torque-high'),
+    '微小超限：b1 的两个位置均应触发「力矩高于区间上端」',
+  );
+  check(
+    rx.report.violations[0]?.torqueAfter === 1.0000000001 && rx.report.violations[1]?.torqueAfter === 1.0000000002,
+    `微小超限：挂后力矩应按录入十进制值精确报告（实际 ${rx.report.violations.map((v) => v.torqueAfter).join(', ')}）`,
+  );
+}
+
+// 对照：上限放宽到恰为 1.0000000001（闭区间边界）时同一场景必须可行，
+// b1 取第一个位置，最终力矩精确贴在边界上；1.0000000002 仍严格超限。
+const decimalBoundaryScenario: Scenario = {
+  ...tinyExcessScenario,
+  limits: { maxLoad: 4, minTorque: -1, maxTorque: 1.0000000001 },
+};
+
+const rb = adjudicate(decimalBoundaryScenario);
+check(rb.feasible, '裁决模块：力矩恰贴十进制上限（闭区间边界）应判定为可行');
+if (rb.feasible) {
+  check(rb.plan.steps.length === 4, '边界场景：完整方案应覆盖四块配重（每块恰用一次）');
+  check(
+    rb.plan.steps[0].blockIndex === 0 && rb.plan.steps[0].optionIndex === 0,
+    '边界场景：b1 应采用第一个位置（1.0000000001）',
+  );
+  check(
+    rb.plan.finalTorque === 1.0000000001 && rb.plan.minTorqueMargin === 0,
+    `边界场景：最终力矩应精确贴上限、余量为 0（实际力矩 ${rb.plan.finalTorque}，余量 ${rb.plan.minTorqueMargin}）`,
+  );
+  check(rb.plan.finalMass === 4 && rb.plan.totalCost === 0, '边界场景：载荷恰好 4（上限）、总代价为 0');
+}
+
+
 // 不可行场景：深度 1 即止步，最深前缀为 b1@R（余量最大），剩余选择同时触发载荷与力矩限制。
 const infeasibleScenario: Scenario = {
   rails: [{ id: 'R', name: 'R', coordinate: 1 }],
